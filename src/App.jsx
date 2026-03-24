@@ -80,7 +80,7 @@ const CodeBlock = ({ language, value, onRefine }) => {
     if (lang === 'php' || lang === 'java') {
       setOutput('Executing on server...');
       try {
-        const response = await axios.post(`${import.meta.env.VITE_API_URL}/api/execute`, {
+        const response = await axios.post(`${import.meta.env.VITE_API_URL || 'https://ai-chatbot-backend-d3gn.onrender.com'}/api/execute`, {
           language: lang,
           code: value
         });
@@ -284,7 +284,7 @@ function App() {
     setIsLoading(true);
 
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/api/chat`, {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'https://ai-chatbot-backend-d3gn.onrender.com'}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: [...messages, userMessage] })
@@ -354,7 +354,7 @@ function App() {
     setIsLoading(true);
 
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/api/chat`, {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || 'https://ai-chatbot-backend-d3gn.onrender.com'}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: [...messages, userMessage] })
