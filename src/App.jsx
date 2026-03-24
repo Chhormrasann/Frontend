@@ -80,12 +80,15 @@ const CodeBlock = ({ language, value, onRefine }) => {
     if (lang === 'php' || lang === 'java') {
       setOutput('Executing on server...');
       try {
+        console.log(`Executing ${lang} on: ${import.meta.env.VITE_API_URL || 'https://ai-chatbot-backend-d3gn.onrender.com'}/api/execute`);
         const response = await axios.post(`${import.meta.env.VITE_API_URL || 'https://ai-chatbot-backend-d3gn.onrender.com'}/api/execute`, {
           language: lang,
           code: value
         });
+        console.log('Execute Response:', response.data);
         setOutput(response.data.output || 'Execution finished (no output)');
       } catch (err) {
+        console.error('Execute Error:', err);
         setOutput(`Server Error: ${err.response?.data?.error || err.message}`);
       }
       return;
@@ -284,11 +287,21 @@ function App() {
     setIsLoading(true);
 
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL || 'https://ai-chatbot-backend-d3gn.onrender.com'}/api/chat`, {
+      const apiUrl = `${import.meta.env.VITE_API_URL || 'https://ai-chatbot-backend-d3gn.onrender.com'}/api/chat`;
+      console.log('Fetching from:', apiUrl);
+      
+      const response = await fetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: [...messages, userMessage] })
       });
+
+      console.log('Response Status:', response.status, response.statusText);
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `Server responded with ${response.status}: ${response.statusText}`);
+      }
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -354,11 +367,21 @@ function App() {
     setIsLoading(true);
 
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL || 'https://ai-chatbot-backend-d3gn.onrender.com'}/api/chat`, {
+      const apiUrl = `${import.meta.env.VITE_API_URL || 'https://ai-chatbot-backend-d3gn.onrender.com'}/api/chat`;
+      console.log('Refinement Fetching from:', apiUrl);
+      
+      const response = await fetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: [...messages, userMessage] })
       });
+
+      console.log('Refinement Response Status:', response.status, response.statusText);
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `Server responded with ${response.status}: ${response.statusText}`);
+      }
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
