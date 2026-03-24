@@ -249,22 +249,56 @@ const CodeBlock = ({ language, value, onRefine }) => {
   );
 };
 
+const API_URL = import.meta.env.VITE_API_URL || 'https://ai-chatbot-backend-d3gn.onrender.com/api/chat';
+
 function App() {
+  const [messages, setMessages] = useState(() => {
+    try {
+      const saved = localStorage.getItem('chat_history');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      console.error("Failed to parse chat history", e);
+      return [];
+    }
+  });
   const [input, setInput] = useState('');
-  const [messages, setMessages] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
-  const [theme, setTheme] = useState('dark');
+  const [theme, setTheme] = useState(() => {
+    return localStorage.getItem('theme') || 'dark';
+  });
+  const [streamingMessage, setStreamingMessage] = useState('');
   const messagesEndRef = useRef(null);
   const textareaRef = useRef(null);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  const scrollToBottom = (instant = false) => {
+    messagesEndRef.current?.scrollIntoView({ 
+      behavior: instant ? 'auto' : 'smooth',
+      block: 'end'
+    });
   };
 
   useEffect(() => {
-    scrollToBottom();
+    scrollToBottom(isLoading);
+  }, [messages, isLoading, streamingMessage]);
+
+  useEffect(() => {
+    if (isLoading) return;
+    try {
+      localStorage.setItem('chat_history', JSON.stringify(messages));
+    } catch (e) {
+      console.error("Failed to save chat history", e);
+    }
   }, [messages, isLoading]);
+
+  useEffect(() => {
+    localStorage.setItem('theme', theme);
+    if (theme === 'dark') {
+      document.body.classList.add('dark-mode');
+    } else {
+      document.body.classList.remove('dark-mode');
+    }
+  }, [theme]);
 
   const handleInput = (e) => {
     setInput(e.target.value);
@@ -278,25 +312,22 @@ function App() {
     if (e) e.preventDefault();
     if (!input.trim() || isLoading) return;
 
-    const userMessage = { role: 'user', content: input };
-    const botPlaceholder = { role: 'assistant', content: '' };
-    
-    setMessages(prev => [...prev, userMessage, botPlaceholder]);
+    const userMessage = { role: 'user', content: input.trim() };
+    const newMessages = [...messages, userMessage];
+    setMessages(newMessages);
     setInput('');
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
     setIsLoading(true);
 
     try {
-      const apiUrl = `${import.meta.env.VITE_API_URL || 'https://ai-chatbot-backend-d3gn.onrender.com'}/api/chat`;
-      console.log('Fetching from:', apiUrl);
-      
-      const response = await fetch(apiUrl, {
+      console.log('Fetching from:', API_URL);
+      const response = await fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: [...messages, userMessage] })
+        body: JSON.stringify({ 
+          messages: newMessages.map(m => ({ role: m.role, content: m.content }))
+        })
       });
-
-      console.log('Response Status:', response.status, response.statusText);
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -305,53 +336,72 @@ function App() {
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      let finished = false;
-      let fullContent = '';
+      let assistantMessage = '';
+      let buffer = '';
+      let queue = '';
+      let isProcessing = false;
 
-      while (!finished) {
-        const { value, done } = await reader.read();
-        if (done) break;
+      const processQueue = () => {
+        if (queue.length === 0) {
+          isProcessing = false;
+          return;
+        }
+        
+        isProcessing = true;
+        const charsToProcess = Math.min(queue.length, Math.ceil(queue.length / 5) + 1);
+        const segment = queue.substring(0, charsToProcess);
+        queue = queue.substring(charsToProcess);
+        assistantMessage += segment;
 
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n');
+        setStreamingMessage(assistantMessage);
+        requestAnimationFrame(processQueue);
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        
+        if (done) {
+          const flushRemaining = setInterval(() => {
+            if (queue.length === 0) {
+              clearInterval(flushRemaining);
+              setMessages(prev => [...prev, { role: 'assistant', content: assistantMessage }]);
+              setStreamingMessage('');
+              setIsLoading(false);
+              return;
+            }
+            if (!isProcessing) processQueue();
+          }, 50);
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
 
         for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const dataStr = line.slice(6);
-            if (dataStr === '[DONE]') {
-              finished = true;
-              break;
-            }
+          const trimmedLine = line.trim();
+          if (!trimmedLine || !trimmedLine.startsWith('data: ')) continue;
 
-            try {
-              const parsed = JSON.parse(dataStr);
-              if (parsed.content) {
-                fullContent += parsed.content;
-                setMessages(prev => {
-                  const updated = [...prev];
-                  updated[updated.length - 1] = { ...updated[updated.length - 1], content: fullContent };
-                  return updated;
-                });
-              } else if (parsed.error) {
-                throw new Error(parsed.details || parsed.error);
-              }
-            } catch (e) {
-              console.error("Stream parse error:", e);
+          const dataStr = trimmedLine.replace(/^data: /,'').trim();
+          if (dataStr === '[DONE]') break;
+
+          try {
+            const data = JSON.parse(dataStr);
+            if (data.content) {
+              queue += data.content;
+              if (!isProcessing) processQueue();
+            } else if (data.error) {
+              throw new Error(data.details || data.error);
             }
+          } catch (e) {
+            console.error('SSE Error:', e);
           }
         }
       }
     } catch (error) {
       console.error('Chat Error:', error);
-      setMessages(prev => {
-        const updated = [...prev];
-        updated[updated.length - 1] = { 
-          role: 'assistant', 
-          content: `Error: ${error.message || 'Connection lost'}` 
-        };
-        return updated;
-      });
-    } finally {
+      setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${error.message || 'Connection lost'}` }]);
+      setStreamingMessage('');
       setIsLoading(false);
     }
   };
@@ -361,22 +411,19 @@ function App() {
 
     const refinementPrompt = `Refine this code:\n\`\`\`\n${originalCode}\n\`\`\`\nInstruction: ${instruction}`;
     const userMessage = { role: 'user', content: refinementPrompt };
-    const botPlaceholder = { role: 'assistant', content: '' };
-    
-    setMessages(prev => [...prev, userMessage, botPlaceholder]);
+    const newMessages = [...messages, userMessage];
+    setMessages(newMessages);
     setIsLoading(true);
 
     try {
-      const apiUrl = `${import.meta.env.VITE_API_URL || 'https://ai-chatbot-backend-d3gn.onrender.com'}/api/chat`;
-      console.log('Refinement Fetching from:', apiUrl);
-      
-      const response = await fetch(apiUrl, {
+      console.log('Refinement Fetching from:', API_URL);
+      const response = await fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: [...messages, userMessage] })
+        body: JSON.stringify({ 
+          messages: newMessages.map(m => ({ role: m.role, content: m.content }))
+        })
       });
-
-      console.log('Refinement Response Status:', response.status, response.statusText);
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -385,51 +432,70 @@ function App() {
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      let finished = false;
-      let fullContent = '';
+      let assistantMessage = '';
+      let buffer = '';
+      let queue = '';
+      let isProcessing = false;
 
-      while (!finished) {
-        const { value, done } = await reader.read();
-        if (done) break;
+      const processQueue = () => {
+        if (queue.length === 0) {
+          isProcessing = false;
+          return;
+        }
+        
+        isProcessing = true;
+        const charsToProcess = Math.min(queue.length, Math.ceil(queue.length / 5) + 1);
+        const segment = queue.substring(0, charsToProcess);
+        queue = queue.substring(charsToProcess);
+        assistantMessage += segment;
 
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n');
+        setStreamingMessage(assistantMessage);
+        requestAnimationFrame(processQueue);
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        
+        if (done) {
+          const flushRemaining = setInterval(() => {
+            if (queue.length === 0) {
+              clearInterval(flushRemaining);
+              setMessages(prev => [...prev, { role: 'assistant', content: assistantMessage }]);
+              setStreamingMessage('');
+              setIsLoading(false);
+              return;
+            }
+            if (!isProcessing) processQueue();
+          }, 50);
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
 
         for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const dataStr = line.slice(6);
-            if (dataStr === '[DONE]') {
-              finished = true;
-              break;
-            }
+          const trimmedLine = line.trim();
+          if (!trimmedLine || !trimmedLine.startsWith('data: ')) continue;
 
-            try {
-              const parsed = JSON.parse(dataStr);
-              if (parsed.content) {
-                fullContent += parsed.content;
-                setMessages(prev => {
-                  const updated = [...prev];
-                  updated[updated.length - 1] = { ...updated[updated.length - 1], content: fullContent };
-                  return updated;
-                });
-              }
-            } catch (e) {
-              console.error("Stream parse error:", e);
+          const dataStr = trimmedLine.replace(/^data: /,'').trim();
+          if (dataStr === '[DONE]') break;
+
+          try {
+            const data = JSON.parse(dataStr);
+            if (data.content) {
+              queue += data.content;
+              if (!isProcessing) processQueue();
             }
+          } catch (e) {
+            console.error('SSE Error:', e);
           }
         }
       }
     } catch (error) {
       console.error('Refinement Error:', error);
-      setMessages(prev => {
-        const updated = [...prev];
-        updated[updated.length - 1] = { 
-          role: 'assistant', 
-          content: `Refinement Error: ${error.message || 'Connection lost'}` 
-        };
-        return updated;
-      });
-    } finally {
+      setMessages(prev => [...prev, { role: 'assistant', content: `Refinement Error: ${error.message || 'Connection lost'}` }]);
+      setStreamingMessage('');
       setIsLoading(false);
     }
   };
@@ -637,7 +703,45 @@ function App() {
                 </div>
               ))
             )}
-            {isLoading && (
+            
+            {streamingMessage && (
+              <div className="py-12 flex gap-8 group animate-in slide-in-from-bottom-6 duration-500 assistant-bubble px-12 -mx-12">
+                <div className="w-11 h-11 rounded-2xl flex-shrink-0 flex items-center justify-center shadow-lg transition-all duration-500 bg-gradient-to-br from-accent to-blue-600 text-white shadow-accent/20">
+                  <Bot size={22} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="font-black text-[10px] uppercase tracking-[0.25em] text-accent">Senior Architect</div>
+                    <div className="h-[1px] flex-1 bg-[var(--border)] opacity-50"></div>
+                  </div>
+                  <div className="markdown prose prose-invert max-w-none leading-[1.7] font-medium text-[15px] text-[var(--text)]">
+                    <ReactMarkdown
+                      components={{
+                        code({ node, inline, className, children, ...props }) {
+                          const match = /language-(\w+)/.exec(className || '');
+                          const lang = match ? match[1] : '';
+                          return !inline ? (
+                            <CodeBlock 
+                              language={lang} 
+                              value={String(children).replace(/\n$/, '')} 
+                              onRefine={handleRefine}
+                            />
+                          ) : (
+                            <code className="inline-block px-1.5 py-0.5 bg-accent/15 text-accent rounded-md font-bold text-[12px] border border-accent/10" {...props}>
+                              {children}
+                            </code>
+                          );
+                        }
+                      }}
+                    >
+                      {streamingMessage}
+                    </ReactMarkdown>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {isLoading && !streamingMessage && (
               <div className="py-10 flex gap-6 animate-pulse px-6">
                 <div className="w-11 h-11 rounded-2xl bg-accent/10 flex-shrink-0 flex items-center justify-center border border-accent/20">
                   <Bot size={22} className="text-accent" />
